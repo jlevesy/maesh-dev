@@ -1,3 +1,5 @@
+MAESH_NAMESPACE ?= maesh
+
 .PHONY: stop-k3d
 stop-k3d:
 	-k3d delete
@@ -8,20 +10,20 @@ start-k3d: stop-k3d
 
 .PHONY: uninstall-maesh
 uninstall-maesh:
-	-kubectl delete -n maesh persistentvolumeclaim/metrics-storage
+	-kubectl delete -n $(MAESH_NAMESPACE) persistentvolumeclaim/metrics-storage
 	-helm del --purge maesh
 
 .PHONY: install-maesh
-install-maesh: uninstall-maesh
+install-maesh: uninstall-maesh push-maesh
 	helm install \
 		${GOPATH}/src/github.com/containous/maesh/helm/chart/maesh \
 		--name maesh \
-		--namespace maesh \
+		--namespace $(MAESH_NAMESPACE) \
 		--set controller.image.tag=latest
 
 .PHONY: watch-maesh
 watch-maesh:
-	watch kubectl -n maesh get all,pv,pvc
+	watch kubectl -n $(MAESH_NAMESPACE) get all,pv,pvc
 
 .PHONY: push-maesh
 push-maesh:
@@ -30,3 +32,7 @@ push-maesh:
 .PHONY: deploy-apps
 deploy-apps:
 	kubectl apply -f ./k8s/apps
+
+.PHONY: stop-controller
+stop-controller:
+	kubectl -n $(MAESH_NAMESPACE) delete pod -l "app=maesh,component=controller"
