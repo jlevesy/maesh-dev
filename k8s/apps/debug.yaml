@@ -18,7 +18,8 @@ spec:
     spec:
       containers:
         - name: debug
-          image: debian:bullseye
+          image: jlevesy/maesh-dev-debug:latest
+          imagePullPolicy: IfNotPresent
           command:
             - "sleep"
             - "infinity"

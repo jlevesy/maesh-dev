@@ -30,9 +30,17 @@ push-maesh:
 	k3d import-images containous/maesh:latest
 
 .PHONY: deploy-apps
-deploy-apps:
+deploy-apps: push-toolbox
 	kubectl apply -f ./k8s/apps
 
 .PHONY: stop-controller
 stop-controller:
 	kubectl -n $(MAESH_NAMESPACE) delete pod -l "app=maesh,component=controller"
+
+.PHONY: build-toolbox
+build-toolbox:
+	docker build -t jlevesy/maesh-dev-debug:latest -f toolbox.Dockerfile .
+
+.PHONY: push-toolbox
+push-toolbox:
+	k3d import-images jlevesy/maesh-dev-debug:latest
