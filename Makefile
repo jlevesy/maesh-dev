@@ -10,8 +10,8 @@ start-k3d: stop-k3d
 
 .PHONY: uninstall-maesh
 uninstall-maesh:
-	-kubectl delete -n $(MAESH_NAMESPACE) persistentvolumeclaim/metrics-storage
 	-helm del --purge maesh
+	-kubectl delete -n $(MAESH_NAMESPACE) persistentvolumeclaim/metrics-storage
 
 .PHONY: install-maesh
 install-maesh: uninstall-maesh push-maesh
