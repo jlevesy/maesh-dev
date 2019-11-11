@@ -61,7 +61,6 @@ func main() {
 	}
 
 	q := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "svc-changed")
-	defer q.ShutDown()
 
 	go func() {
 		sigs := make(chan os.Signal, 1)
@@ -69,6 +68,7 @@ func main() {
 
 		s := <-sigs
 		log.Printf("Received signal %v, exiting", s)
+		cancel()
 		q.ShutDown()
 	}()
 
@@ -77,7 +77,7 @@ func main() {
 	svcInformer := factory.Core().V1().Services().Informer()
 	svcLister := factory.Core().V1().Services().Lister()
 
-	svcInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	svcInformer.AddEventHandlerWithResyncPeriod(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			q.Add(event{Type: typeAdded, Object: obj.(v1.Object)})
 		},
@@ -86,6 +86,8 @@ func main() {
 			v1obj := obj.(v1.Object)
 
 			if v1obj.GetResourceVersion() == v1old.GetResourceVersion() {
+				// Periodic resync will send update events for all known Deployments.
+				// Two different versions of the same Deployment will always have different RVs.
 				return
 			}
 
@@ -94,7 +96,7 @@ func main() {
 		DeleteFunc: func(obj interface{}) {
 			q.Add(event{Type: typeRemoved, Object: obj.(v1.Object)})
 		},
-	})
+	}, 30*time.Second)
 
 	log.Println("Starting the informer")
 	factory.Start(ctx.Done())
@@ -110,7 +112,6 @@ func main() {
 	}
 
 	log.Println("Event loop has exited, bye bye.")
-	cancel()
 }
 
 func handleEvent(q workqueue.RateLimitingInterface, svcLister listersv1.ServiceLister) bool {
