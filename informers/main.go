@@ -8,8 +8,10 @@ import (
 	"syscall"
 	"time"
 
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -42,8 +44,8 @@ const (
 
 type event struct {
 	Type      eventType
-	Object    v1.Object
-	OldObject v1.Object
+	Object    *corev1.Service
+	OldObject *corev1.Service
 }
 
 func main() {
@@ -72,38 +74,48 @@ func main() {
 		q.ShutDown()
 	}()
 
-	factory := informers.NewSharedInformerFactory(clientSet, 10*time.Second)
+	factory := informers.NewSharedInformerFactoryWithOptions(
+		clientSet,
+		10*time.Second,
+		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
+			// Here we can ignore namespaces and objects pased on labels.
+			opts.FieldSelector = "metadata.namespace!=kube-system,metadata.name!=kubernetes"
+		}),
+	)
 
 	svcInformer := factory.Core().V1().Services().Informer()
 	svcLister := factory.Core().V1().Services().Lister()
 
-	svcInformer.AddEventHandlerWithResyncPeriod(cache.ResourceEventHandlerFuncs{
+	svcInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			q.Add(event{Type: typeAdded, Object: obj.(v1.Object)})
+			q.Add(event{Type: typeAdded, Object: obj.(*corev1.Service)})
 		},
 		UpdateFunc: func(oldObj, obj interface{}) {
-			v1old := oldObj.(v1.Object)
-			v1obj := obj.(v1.Object)
+			oldSvc := oldObj.(*corev1.Service)
+			svc := obj.(*corev1.Service)
 
-			if v1obj.GetResourceVersion() == v1old.GetResourceVersion() {
-				// Periodic resync will send update events for all known Deployments.
-				// Two different versions of the same Deployment will always have different RVs.
+			if oldSvc.GetResourceVersion() == svc.GetResourceVersion() {
+				// Periodic resync will send update events for all known Services.
+				// Two different versions of the same Services will always have different RVs.
 				return
 			}
 
-			q.Add(event{Type: typeUpdated, Object: v1obj, OldObject: v1old})
+			q.Add(event{Type: typeUpdated, Object: svc, OldObject: oldSvc})
 		},
 		DeleteFunc: func(obj interface{}) {
-			q.Add(event{Type: typeRemoved, Object: obj.(v1.Object)})
+			q.Add(event{Type: typeRemoved, Object: obj.(*corev1.Service)})
 		},
-	}, 30*time.Second)
+	})
 
 	log.Println("Starting the informer")
 	factory.Start(ctx.Done())
 
-	log.Println("Waiting for the cache to be warmed up")
-	if ok := cache.WaitForCacheSync(ctx.Done(), svcInformer.HasSynced); !ok {
-		log.Fatal("unable to wait for cache sync")
+	log.Println("Waiting for the cache to be ready")
+	results := factory.WaitForCacheSync(ctx.Done())
+	for _, ok := range results {
+		if !ok {
+			panic("unable to warmup cache")
+		}
 	}
 
 	// Run the event loop.
@@ -123,11 +135,6 @@ func handleEvent(q workqueue.RateLimitingInterface, svcLister listersv1.ServiceL
 
 	evt := in.(event)
 
-	if evt.Type == typeUpdated && evt.Object.GetResourceVersion() == evt.OldObject.GetResourceVersion() {
-		log.Println("skipping event due to refresh")
-		return true
-	}
-
 	log.Printf(
 		"Service %q, from namespace %q has been %s",
 		evt.Object.GetName(),
@@ -135,15 +142,60 @@ func handleEvent(q workqueue.RateLimitingInterface, svcLister listersv1.ServiceL
 		evt.Type,
 	)
 
-	svcs, err := svcLister.List(labels.Everything())
+	svcs, err := svcLister.List(listNonMaeshSvcs())
 	if err != nil {
 		log.Fatal("Unable to read services from cache: %v", err)
 	}
 
 	for _, svc := range svcs {
-		log.Printf("svc %q from Namespace %q", svc.GetName(), svc.GetNamespace())
+		log.Printf("svc %q from Namespace %q can be exposed by maesh", svc.GetName(), svc.GetNamespace())
+	}
+
+	maeshSvcs, err := svcLister.List(listMaeshSvcs())
+	if err != nil {
+		log.Fatal("Unable to read services from cache: %v", err)
+	}
+
+	for _, svc := range maeshSvcs {
+		log.Printf("svc %q from Namespace %q is a maesh service", svc.GetName(), svc.GetNamespace())
 	}
 
 	q.Forget(in)
 	return true
+}
+
+func listMaeshSvcs() labels.Selector {
+	sel := labels.Everything()
+
+	r, err := labels.NewRequirement("app", selection.Equals, []string{"maesh"})
+	if err != nil {
+		panic(err)
+	}
+	sel = sel.Add(*r)
+
+	r, err = labels.NewRequirement("component", selection.Equals, []string{"maesh-svc"})
+	if err != nil {
+		panic(err)
+	}
+	sel = sel.Add(*r)
+
+	return sel
+}
+
+func listNonMaeshSvcs() labels.Selector {
+	sel := labels.Everything()
+
+	r, err := labels.NewRequirement("app", selection.NotEquals, []string{"maesh"})
+	if err != nil {
+		panic(err)
+	}
+	sel = sel.Add(*r)
+
+	r, err = labels.NewRequirement("app", selection.NotEquals, []string{"jaeger"})
+	if err != nil {
+		panic(err)
+	}
+	sel = sel.Add(*r)
+
+	return sel
 }
