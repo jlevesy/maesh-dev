@@ -21,9 +21,18 @@ install-maesh: uninstall-maesh push-maesh
 		--namespace $(MAESH_NAMESPACE) \
 		--set controller.image.tag=latest
 
+.PHONY: install-maesh-smi
+install-maesh-smi: uninstall-maesh push-maesh
+	helm install \
+		${GOPATH}/src/github.com/containous/maesh/helm/chart/maesh \
+		--name maesh \
+		--namespace $(MAESH_NAMESPACE) \
+		--set controller.image.tag=latest \
+		--set smi=true
+
 .PHONY: watch-maesh
 watch-maesh:
-	watch kubectl -n $(MAESH_NAMESPACE) get all,pv,pvc
+	watch kubectl -n $(MAESH_NAMESPACE) get svc,pods
 
 .PHONY: push-maesh
 push-maesh:
@@ -32,6 +41,10 @@ push-maesh:
 .PHONY: deploy-apps
 deploy-apps: push-toolbox
 	kubectl apply -f ./k8s/apps
+
+.PHONY: deploy-smi-example
+deploy-smi-example: push-toolbox
+	kubectl apply -f ./k8s/smi
 
 .PHONY: stop-controller
 stop-controller:

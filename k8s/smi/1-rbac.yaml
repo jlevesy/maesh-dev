@@ -1,0 +1,12 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: whoami
+  namespace: smi-test
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: debug
+  namespace: smi-test

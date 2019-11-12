@@ -1,0 +1,64 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: debug
+  namespace: smi-test
+  labels:
+    app: debug
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: debug
+  template:
+    metadata:
+      labels:
+        app: debug
+    spec:
+      serviceAccountName: debug
+      containers:
+        - name: debug
+          image: jlevesy/maesh-dev-debug:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - "sleep"
+            - "infinity"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whoami
+  namespace: smi-test
+  labels:
+    app: whoami
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: whoami
+  template:
+    metadata:
+      labels:
+        app: whoami
+    spec:
+      serviceAccountName: whoami
+      containers:
+        - name: whoami
+          image: containous/whoami:v1.4.0
+          ports:
+            - containerPort: 80
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: whoami
+  namespace: smi-test
+spec:
+  selector:
+    app: whoami
+  ports:
+    - name: web
+      protocol: TCP
+      port: 80
+      targetPort: 80

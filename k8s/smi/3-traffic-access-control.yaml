@@ -1,0 +1,33 @@
+---
+apiVersion: specs.smi-spec.io/v1alpha1
+kind: HTTPRouteGroup
+metadata:
+  name: whoami-service-routes
+matches:
+  - name: api
+    pathRegex: /api
+    methods: ["*"]
+  - name: metrics
+    pathRegex: /metrics
+    methods: ["GET"]
+
+---
+kind: TrafficTarget
+apiVersion: access.smi-spec.io/v1alpha1
+metadata:
+  name: whoami-service
+  namespace: smi-test
+destination:
+  kind: ServiceAccount
+  name: whoami
+  namespace: smi-test
+  port: 80
+specs:
+  - kind: HTTPRouteGroup
+    name: whoami-service-routes
+    matches:
+      - api
+sources:
+  - kind: ServiceAccount
+    name: debug
+    namespace: smi-test
