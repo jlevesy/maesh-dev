@@ -3,6 +3,7 @@ apiVersion: specs.smi-spec.io/v1alpha1
 kind: HTTPRouteGroup
 metadata:
   name: whoami-service-routes
+  namespace: smi-test
 matches:
   - name: api
     pathRegex: /api
@@ -21,7 +22,7 @@ destination:
   kind: ServiceAccount
   name: whoami
   namespace: smi-test
-  port: 80
+  port: "80"
 specs:
   - kind: HTTPRouteGroup
     name: whoami-service-routes
