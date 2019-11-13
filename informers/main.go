@@ -9,6 +9,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
@@ -19,34 +20,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/workqueue"
 )
-
-type eventType int
-
-func (t eventType) String() string {
-	switch t {
-	case typeAdded:
-		return "added"
-	case typeUpdated:
-		return "updated"
-	case typeRemoved:
-		return "removed"
-	default:
-		return "unknown"
-	}
-}
-
-const (
-	typeUnknown eventType = iota
-	typeAdded
-	typeUpdated
-	typeRemoved
-)
-
-type event struct {
-	Type      eventType
-	Object    *corev1.Service
-	OldObject *corev1.Service
-}
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -84,26 +57,36 @@ func main() {
 	)
 
 	svcInformer := factory.Core().V1().Services().Informer()
-	svcLister := factory.Core().V1().Services().Lister()
+	svcLister := NewServiceLister(factory.Core().V1().Services().Informer().GetIndexer())
 
 	svcInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			q.Add(event{Type: typeAdded, Object: obj.(*corev1.Service)})
+			k, err := cache.MetaNamespaceKeyFunc(obj)
+			if err != nil {
+				panic(err)
+			}
+			q.Add(k)
 		},
-		UpdateFunc: func(oldObj, obj interface{}) {
-			oldSvc := oldObj.(*corev1.Service)
-			svc := obj.(*corev1.Service)
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldMeta, _ := meta.Accessor(oldObj)
+			newMeta, _ := meta.Accessor(newObj)
 
-			if oldSvc.GetResourceVersion() == svc.GetResourceVersion() {
-				// Periodic resync will send update events for all known Services.
-				// Two different versions of the same Services will always have different RVs.
+			if oldMeta.GetResourceVersion() == newMeta.GetResourceVersion() {
 				return
 			}
 
-			q.Add(event{Type: typeUpdated, Object: svc, OldObject: oldSvc})
+			k, err := cache.MetaNamespaceKeyFunc(newObj)
+			if err != nil {
+				panic(err)
+			}
+			q.Add(k)
 		},
 		DeleteFunc: func(obj interface{}) {
-			q.Add(event{Type: typeRemoved, Object: obj.(*corev1.Service)})
+			k, err := cache.MetaNamespaceKeyFunc(obj)
+			if err != nil {
+				panic(err)
+			}
+			q.Add(k)
 		},
 	})
 
@@ -126,25 +109,33 @@ func main() {
 	log.Println("Event loop has exited, bye bye.")
 }
 
-func handleEvent(q workqueue.RateLimitingInterface, svcLister listersv1.ServiceLister) bool {
-	in, ok := q.Get()
+func handleEvent(q workqueue.RateLimitingInterface, svcLister *ServiceLister) bool {
+	evt, ok := q.Get()
 	if ok {
 		return false
 	}
-	defer q.Done(in)
+	defer q.Done(evt)
 
-	evt := in.(event)
+	k, ok := evt.(string)
+	if !ok {
+		q.Forget(evt)
+	}
+
+	name, namespace, err := cache.SplitMetaNamespaceKey(k)
+	if err != nil {
+		log.Println("ERROR when spliting key", err)
+		q.Forget(evt)
+	}
 
 	log.Printf(
-		"Service %q, from namespace %q has been %s",
-		evt.Object.GetName(),
-		evt.Object.GetNamespace(),
-		evt.Type,
+		"Service %q, from namespace %q is updated",
+		name,
+		namespace,
 	)
 
 	svcs, err := svcLister.List(listNonMaeshSvcs())
 	if err != nil {
-		log.Fatal("Unable to read services from cache: %v", err)
+		log.Fatalf("Unable to read services from cache: %v", err)
 	}
 
 	for _, svc := range svcs {
@@ -153,15 +144,56 @@ func handleEvent(q workqueue.RateLimitingInterface, svcLister listersv1.ServiceL
 
 	maeshSvcs, err := svcLister.List(listMaeshSvcs())
 	if err != nil {
-		log.Fatal("Unable to read services from cache: %v", err)
+		log.Fatalf("Unable to read services from cache: %v", err)
 	}
 
 	for _, svc := range maeshSvcs {
 		log.Printf("svc %q from Namespace %q is a maesh service", svc.GetName(), svc.GetNamespace())
 	}
 
-	q.Forget(in)
+	nonKubesystemSvcs, err := svcLister.ListExcludingNamespaces(labels.Everything(), map[string]struct{}{"kube-system": struct{}{}})
+	if err != nil {
+		log.Fatalf("Unable to read services from cache: %v", err)
+	}
+	for _, svc := range nonKubesystemSvcs {
+		log.Printf("svc %q from Namespace %q is a not in the kube-system namespace", svc.GetName(), svc.GetNamespace())
+	}
+
+	q.Forget(evt)
 	return true
+}
+
+// ServiceLister lists services in an extended way.
+type ServiceLister struct {
+	listersv1.ServiceLister
+
+	indexer cache.Indexer
+}
+
+// NewServiceLister builds an extended service lister.
+func NewServiceLister(indexer cache.Indexer) *ServiceLister {
+	return &ServiceLister{
+		ServiceLister: listersv1.NewServiceLister(indexer),
+		indexer:       indexer,
+	}
+}
+
+// ListExcludingNamespaces lists all services not in the given namepsace set.
+func (e ServiceLister) ListExcludingNamespaces(sel labels.Selector, namespaces map[string]struct{}) (svcs []*corev1.Service, err error) {
+	// Slow and naïve implementation not relying on the indexer,
+	// we might do better if we're able to list all present namespaces.
+	err = cache.ListAll(e.indexer, sel, func(m interface{}) {
+		svc := m.(*corev1.Service)
+
+		// If it's excluded in excluded namespace set, then don't use it.
+		if _, ok := namespaces[svc.GetNamespace()]; ok {
+			return
+		}
+
+		svcs = append(svcs, svc)
+	})
+	return svcs, err
+
 }
 
 func listMaeshSvcs() labels.Selector {
