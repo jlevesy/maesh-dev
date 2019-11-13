@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: debug
-          image: jlevesy/maesh-dev-debug:latest
+          image: giantswarm/tiny-tools:latest
           imagePullPolicy: IfNotPresent
           command:
             - "sleep"
